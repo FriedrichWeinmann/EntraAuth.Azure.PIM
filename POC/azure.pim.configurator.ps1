@@ -96,7 +96,8 @@ function Get-ResourceTask {
 	$tasks = do {
 		Get-ConfigTask -Resource $Resource -Config $Config -Roles $roles
 		Get-NotificationTask -Resource $Resource -Config $Config -Roles $roles
-		Get-AssignmentTask -Resource $Resource -Config $Config
+		# Not Implemented:
+		# Get-AssignmentTask -Resource $Resource -Config $Config
 	}
 	while ($false)
 
@@ -971,9 +972,12 @@ foreach ($resource in $config.InScope.Resources) {
 			switch ($task.Type) {
 				Config { Invoke-ConfigTask -Task $task }
 				Notification { Invoke-NotificationTask -Task $task }
+				<#
+				Not Implemented:
 				AddAssignment { Add-RoleAssignment -Task $task }
 				RemoveAssignment { Remove-RoleAssignment -Task $task }
 				UpdateAssignment { Update-RoleAssignment -Task $task }
+				#>
 				default { Write-Warning "Unexpected Task Type: $($task.Type) for resource '$($task.Resource)'" }
 			}
 		}
