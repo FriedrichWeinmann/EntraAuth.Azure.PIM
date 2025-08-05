@@ -133,7 +133,11 @@ function Get-ConfigTask {
 		}
 
 		$desired = Resolve-ConfigState -Config $Config -Resource $Resource -Role $Role
-		$actualSettings = Get-AzPimRoleConfiguration -Resource $Resource -RoleID $roleID
+		try { $actualSettings = Get-AzPimRoleConfiguration -Resource $Resource -RoleID $roleID }
+		catch {
+			Write-Warning "Failed to retrieve role configuration $role / $($roleID): $_"
+			continue
+		}
 
 		$changes = @()
 
@@ -338,15 +342,15 @@ function Invoke-NotificationTask {
 	$roleConfig = Get-AzPimRoleConfiguration -Resource $Task.Resource -RoleID $Task.Object.RoleID -Raw
 
 	$propertyMap = @{
-		AssignEligibleAlert = $roleConfig.properties.rules | Where-Object id -EQ Notification_Admin_Admin_Eligibility
-		AssignEligibleAssignee = $roleConfig.properties.rules | Where-Object id -EQ Notification_Requestor_Admin_Eligibility
+		AssignEligibleAlert           = $roleConfig.properties.rules | Where-Object id -EQ Notification_Admin_Admin_Eligibility
+		AssignEligibleAssignee        = $roleConfig.properties.rules | Where-Object id -EQ Notification_Requestor_Admin_Eligibility
 		AssignEligibleRenewalApprover = $roleConfig.properties.rules | Where-Object id -EQ Notification_Approver_Admin_Eligibility
-		AssignActiveAlert = $roleConfig.properties.rules | Where-Object id -EQ Notification_Admin_Admin_Assignment
-		AssignActiveAssignee = $roleConfig.properties.rules | Where-Object id -EQ Notification_Requestor_Admin_Assignment
-		AssignActiveRenewalApprover = $roleConfig.properties.rules | Where-Object id -EQ Notification_Approver_Admin_Assignment
-		ActivationAlert = $roleConfig.properties.rules | Where-Object id -EQ Notification_Admin_EndUser_Assignment
-		ActivationRequester = $roleConfig.properties.rules | Where-Object id -EQ Notification_Requestor_EndUser_Assignment
-		ActivationApprover = $roleConfig.properties.rules | Where-Object id -EQ Notification_Approver_EndUser_Assignment
+		AssignActiveAlert             = $roleConfig.properties.rules | Where-Object id -EQ Notification_Admin_Admin_Assignment
+		AssignActiveAssignee          = $roleConfig.properties.rules | Where-Object id -EQ Notification_Requestor_Admin_Assignment
+		AssignActiveRenewalApprover   = $roleConfig.properties.rules | Where-Object id -EQ Notification_Approver_Admin_Assignment
+		ActivationAlert               = $roleConfig.properties.rules | Where-Object id -EQ Notification_Admin_EndUser_Assignment
+		ActivationRequester           = $roleConfig.properties.rules | Where-Object id -EQ Notification_Requestor_EndUser_Assignment
+		ActivationApprover            = $roleConfig.properties.rules | Where-Object id -EQ Notification_Approver_EndUser_Assignment
 	}
 
 	#region Apply Updates
@@ -367,7 +371,7 @@ function Invoke-NotificationTask {
 				if ($change.New) { $rule.notificationRecipients = @($rule.notificationRecipients) + $change.New }
 				else { $rule.notificationRecipients = @($rule.notificationRecipients | Where-Object { $_ -ne $change.Old }) }
 			}
-			Default {
+			default {
 				Write-Warning "Error updating $($Task.Resource) > $($Task.Role): Unexpected change type '$($change.SubProperty)'. This would happen when a code change only applied to the Test routine, but the update routine was not implemented to match and requires a code change to resolve."
 			}
 		}
@@ -748,11 +752,13 @@ function Get-AzPimRoleConfiguration {
 		$Raw
 	)
 
+	$rolePolicyMapping = Get-AzPimRolePolicyMapping -Resource $Resource -AsHashtable
+
 	# https://management.azure.com/subscriptions/a47f11ba-ac24-4645-87fa-4d320d7a2c47/providers/Microsoft.Authorization/roleManagementPolicies/21090545-7ca7-4776-b22c-e363652d74d2?api-version=2020-10-01&$filter=asTarget()
-	$roleDataRaw = Invoke-AzPimRequest -Request "$Resource/providers/Microsoft.Authorization/roleManagementPolicies/$RoleID"
+	$roleDataRaw = Invoke-AzPimRequest -Request "$Resource/providers/Microsoft.Authorization/roleManagementPolicies/$($rolePolicyMapping[$RoleID].PolicyID)"
 	if ($roleDataRaw.StatusCode -notmatch "^2") {
 		$errorData = $roleDataRaw.Content | ConvertFrom-Json
-		throw "Error requestion role $RoleID from $($Resource): $($roleDataRaw.StatusCode) | $($errorData.error.code) | $($errorData.error.message)"
+		throw "Error requesting role $RoleID from $($Resource): $($roleDataRaw.StatusCode) | $($errorData.error.code) | $($errorData.error.message)"
 	}
 
 	$data = $roleDataRaw.Content | ConvertFrom-Json
@@ -795,6 +801,42 @@ function Get-AzPimRoleConfiguration {
 		Properties             = $data.properties
 	}
 }
+function Get-AzPimRolePolicyMapping {
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]
+		$Resource,
+
+		[switch]
+		$AsHashtable
+	)
+
+	if (-not $script:_RolePolicyMapping) { $script:_RolePolicyMapping = @{ } }
+	if ($script:_RolePolicyMapping[$Resource]) {
+		if ($AsHashtable) { return $script:_RolePolicyMapping[$Resource].Clone() }
+		else { return $script:_RolePolicyMapping[$Resource].Values }
+	}
+
+	$script:_RolePolicyMapping[$Resource] = @{ }
+
+	$content = (Invoke-AzPimRequest -Request "$Resource/providers/Microsoft.Authorization/roleManagementPolicyAssignments" -ApiVersion '2020-10-01').Content | ConvertFrom-Json
+	foreach ($entry in $content.value) {
+		$roleID = ($entry.properties.roleDefinintionId -split '/')[-1]
+		$policyID = ($entry.properties.policyId -split '/')[-1]
+		$script:_RolePolicyMapping[$Resource][$roleID] = [PSCustomObject]@{
+			PSTypeName   = 'AzurePIM.RolePolicyMapping'
+			Resource     = $Resource
+			RoleID       = $roleID
+			PolicyID     = $policyID
+			RoleIDFull   = $entry.properties.roleDefinintionId
+			PolicyIDFull = $entry.properties.policyId
+		}
+	}
+
+	if ($AsHashtable) { $script:_RolePolicyMapping[$Resource].Clone() }
+	else { $script:_RolePolicyMapping[$Resource].Values }
+}
 function Set-AzPimResourceRole {
 	[CmdletBinding()]
 	param (
@@ -810,8 +852,10 @@ function Set-AzPimResourceRole {
 		$RoleID
 	)
 
+	$rolePolicyMapping = Get-AzPimRolePolicyMapping -Resource $Resource -AsHashtable
+
 	$body = @{ properties = $Properties } | ConvertTo-Json -Depth 99
-	$response = Invoke-AzPimRequest -Method Patch -Request "$($Resource)/providers/Microsoft.Authorization/roleManagementPolicies/$($RoleID)" -ApiVersion '2020-10-01' -Body $body
+	$response = Invoke-AzPimRequest -Method Patch -Request "$($Resource)/providers/Microsoft.Authorization/roleManagementPolicies/$($rolePolicyMapping[$RoleID].PolicyID)" -ApiVersion '2020-10-01' -Body $body
 	if ($response.StatusCode -notmatch "^2") {
 		$script:_errorData = @{
 			Data     = $body
@@ -854,8 +898,10 @@ function Get-AzPimRoleNotification {
 	}
 	#endregion Utility Function
 
+	
 	if (-not $RoleDataRaw) {
-		$RoleDataRaw = Invoke-AzPimRequest -Request "$Resource/providers/Microsoft.Authorization/roleManagementPolicies/$RoleID"
+		$rolePolicyMapping = Get-AzPimRolePolicyMapping -Resource $Resource -AsHashtable
+		$RoleDataRaw = Invoke-AzPimRequest -Request "$Resource/providers/Microsoft.Authorization/roleManagementPolicies/$($rolePolicyMapping[$RoleID].PolicyID)"
 		if ($RoleDataRaw.StatusCode -notmatch "^2") {
 			$errorData = $RoleDataRaw.Content | ConvertFrom-Json
 			throw "Error requestion role $RoleID from $($Resource): $($RoleDataRaw.StatusCode) | $($errorData.error.code) | $($errorData.error.message)"
