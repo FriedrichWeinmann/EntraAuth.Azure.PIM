@@ -207,59 +207,56 @@ function Invoke-ConfigTask {
 	foreach ($change in $Task.Changes) {
 		switch ($change.Property) {
 			MaxDuration {
-				$expiration.UserActivation.maximumDuration = $change.New | ConvertTo-DurationString -AsMinutes
+				Set-Property -InputObject $expiration.UserActivation -Property maximumDuration -Value ($change.New | ConvertTo-DurationString -AsMinutes)
 			}
 			RequireMFA {
 				if (-not $change.New) {
-					$enablement.UserActivation.enabledRules = @($enablement.UserActivation.enabledRules | Where-Object { $_ -ne 'MultiFactorAuthentication' })
+					Set-Property -InputObject $expiration.UserActivation -Property enabledRules -Value @($enablement.UserActivation.enabledRules | Where-Object { $_ -ne 'MultiFactorAuthentication' })
 				}
 				else {
-					$enablement.UserActivation.enabledRules = @($enablement.UserActivation.enabledRules) + 'MultiFactorAuthentication'
+					Set-Property -InputObject $expiration.UserActivation -Property enabledRules -DefaultValue @() -Value 'MultiFactorAuthentication' -Add
 				}
 			}
 			Justification {
 				if (-not $change.New) {
-					$enablement.UserActivation.enabledRules = @($enablement.UserActivation.enabledRules | Where-Object { $_ -ne 'Justification' })
+					Set-Property -InputObject $expiration.UserActivation -Property enabledRules -Value @($enablement.UserActivation.enabledRules | Where-Object { $_ -ne 'Justification' })
 				}
 				else {
-					$enablement.UserActivation.enabledRules = @($enablement.UserActivation.enabledRules) + 'Justification'
+					Set-Property -InputObject $expiration.UserActivation -Property enabledRules -DefaultValue @() -Value 'Justification' -Add
 				}
 			}
 			Ticket {
 				if (-not $change.New) {
-					$enablement.UserActivation.enabledRules = @($enablement.UserActivation.enabledRules | Where-Object { $_ -ne 'Ticketing' })
+					Set-Property -InputObject $expiration.UserActivation -Property enabledRules -Value @($enablement.UserActivation.enabledRules | Where-Object { $_ -ne 'Ticketing' })
 				}
 				else {
-					$enablement.UserActivation.enabledRules = @($enablement.UserActivation.enabledRules) + 'Ticketing'
+					Set-Property -InputObject $expiration.UserActivation -Property enabledRules -DefaultValue @() -Value 'Ticketing' -Add
 				}
 			}
 			RequiresApprover {
-				$approver.setting.isApprovalRequired = $change.New
+				Set-Property -InputObject $approver.setting -Property isApprovalRequired -Value $change.New
 			}
 			Approver {
 				$stage = $approver.setting.approvalStages[0]
 
 				if ($change.Old) {
-					$stage.primaryApprovers = @($stage.primaryApprovers | Where-Object id -NE $change.Old)
+					Set-Property -InputObject $stage -Property primaryApprovers -Value @($stage.primaryApprovers | Where-Object id -NE $change.Old)
 					continue
 				}
-				if ($stage.PSObject.Properties.Name -notcontains 'primaryApprovers') {
-					Add-Member -InputObject $stage -MemberType NoteProperty -Name primaryApprovers -Value @() -Force
-				}
-
-				$stage.primaryApprovers = @($stage.primaryApprovers) + (Resolve-Approver -Id $change.New)
+				
+				Set-Property -InputObject $stage -Property primaryApprovers -Value (Resolve-Approver -Id $change.New) -DefaultValue @() -Add
 			}
 			EligiblePermanent {
-				$expiration.Eligible.isExpirationRequired = -not $change.New
+				Set-Property -InputObject $expiration.Eligible -Property isExpirationRequired -Value (-not $change.New)
 			}
 			EligibleDuration {
-				$expiration.Eligible.maximumDuration = $change.New | ConvertTo-DurationString -AsDays
+				Set-Property -InputObject $expiration.Eligible -Property maximumDuration -Value ($change.New | ConvertTo-DurationString -AsDays)
 			}
 			ActivePermanent {
-				$expiration.Active.isExpirationRequired = -not $change.New
+				Set-Property -InputObject $expiration.Active -Property isExpirationRequired -Value (-not $change.New)
 			}
 			ActiveDuration {
-				$expiration.Active.maximumDuration = $change.New | ConvertTo-DurationString -AsDays
+				Set-Property -InputObject $expiration.Active -Property maximumDuration -Value ($change.New | ConvertTo-DurationString -AsDays)
 			}
 			default {
 				Write-Warning "Failed to apply config update to $($Task.Resource) > $($Task.Role): $($Change.Property) updates have not yet been implemented!"
@@ -822,7 +819,7 @@ function Get-AzPimRolePolicyMapping {
 
 	$content = (Invoke-AzPimRequest -Request "$Resource/providers/Microsoft.Authorization/roleManagementPolicyAssignments" -ApiVersion '2020-10-01').Content | ConvertFrom-Json
 	foreach ($entry in $content.value) {
-		$roleID = ($entry.properties.roleDefinintionId -split '/')[-1]
+		$roleID = ($entry.properties.roleDefinitionId -split '/')[-1]
 		$policyID = ($entry.properties.policyId -split '/')[-1]
 		$script:_RolePolicyMapping[$Resource][$roleID] = [PSCustomObject]@{
 			PSTypeName   = 'AzurePIM.RolePolicyMapping'
@@ -1005,7 +1002,65 @@ function ConvertTo-DurationString {
 }
 #endregion PIM API
 
+#region PowerShell Internals
+function Set-Property {
+	<#
+	.SYNOPSIS
+		Sets the property on an object, whether that property exists or not.
+	
+	.DESCRIPTION
+		Sets the property on an object, whether that property exists or not.
+		Calls Add-Member to add the property in case of need.
+	
+	.PARAMETER InputObject
+		The object to set the property on.
+	
+	.PARAMETER Property
+		Name of the property to set.
+	
+	.PARAMETER Value
+		The Value to apply.
+	
+	.PARAMETER Add
+		Add the value to the property using a "+=" Operation, rather than directly assigning it.
+	
+	.PARAMETER DefaultValue
+		The default value for the property, which is temporarily used when creating the property, before assigning the value.
+		Defaults to $null
+		This is primarily used to simplify scenarios, where the property must always be an array, in combination with the -Add parameter.
+	
+	.EXAMPLE
+		PS C:\> Set-Property -InputObject $item -Property Answer -Value 42
 
+		Ensures the object in $item has the property named "Answer", then sets it to 42.
+	#>
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		$InputObject,
+
+		[Parameter(Mandatory = $true)]
+		[string]
+		$Property,
+		
+		[Parameter(Mandatory = $true)]
+		[AllowEmptyCollection()]
+		[AllowNull()]
+		$Value,
+
+		[switch]
+		$Add,
+
+		$DefaultValue = $null
+	)
+
+	if ($InputObject.PSObject.Properties.Name -notcontains $Property) {
+		Add-Member -InputObject $InputObject -MemberType NoteProperty -Name $Property -Value $DefaultValue -Force
+	}
+	if ($Add) { $InputObject.$Property += $Value }
+	else { $InputObject.$Property = $Value }
+}
+#endregion PowerShell Internals
 #endregion Functions
 
 if ($Noop) { return }
