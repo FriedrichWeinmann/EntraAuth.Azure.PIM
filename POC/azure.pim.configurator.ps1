@@ -549,16 +549,16 @@ function Resolve-NotificationState {
 	foreach ($rootKey in $rootKeys.Keys) {
 		foreach ($subKey in $rootKeys.$rootKey) {
 			foreach ($coreName in $coreNames) {
-				if ($Config.Notifications.Default.$rootKey.$subKey.$coreName) {
+				if ($Config.Notifications.Default.$rootKey.$subKey.Keys -contains $coreName) {
 					$settings.$rootKey.$subKey.$coreName = $Config.Notifications.Default.$rootKey.$subKey.$coreName
 				}
-				if ($Config.Notifications.$Role.$rootKey.$subKey.$coreName) {
+				if ($Config.Notifications.$Role.$rootKey.$subKey.Keys -contains $coreName) {
 					$settings.$rootKey.$subKey.$coreName = $Config.Notifications.$Role.$rootKey.$subKey.$coreName
 				}
-				if ($Config.Notifications.$Resource.Default.$rootKey.$subKey.$coreName) {
+				if ($Config.Notifications.$Resource.Default.$rootKey.$subKey.Keys -contains $coreName) {
 					$settings.$rootKey.$subKey.$coreName = $Config.Notifications.$Resource.Default.$rootKey.$subKey.$coreName
 				}
-				if ($Config.Notifications.$Resource.$Role.$rootKey.$subKey.$coreName) {
+				if ($Config.Notifications.$Resource.$Role.$rootKey.$subKey.Keys -contains $coreName) {
 					$settings.$rootKey.$subKey.$coreName = $Config.Notifications.$Resource.$Role.$rootKey.$subKey.$coreName
 				}
 			}
